@@ -67,6 +67,7 @@ function createHud() {
   let targetElement = null;
   let metadata = null;
   let inputBar = null;
+  let historyPanel = null;
 
   const resize = () => {
     canvas.width = window.innerWidth * devicePixelRatio;
@@ -159,7 +160,15 @@ function createHud() {
     });
     const feedback = document.createElement('span');
     Object.assign(feedback.style, { color: '#9ceff4', whiteSpace: 'nowrap' });
-    inputBar.append(badge, input, feedback);
+    const historyButton = document.createElement('button');
+    historyButton.type = 'button';
+    historyButton.textContent = 'History';
+    Object.assign(historyButton.style, {
+      border: '1px solid #1f8fa0', borderRadius: '5px', padding: '4px 7px',
+      background: '#0d2b38', color: '#baf7fb', cursor: 'pointer', font: 'inherit',
+    });
+    historyButton.addEventListener('click', () => showHistory(selector, feedback));
+    inputBar.append(badge, input, historyButton, feedback);
     root.append(inputBar);
     input.focus();
 
@@ -189,6 +198,57 @@ function createHud() {
   function removeInputBar() {
     inputBar?.remove();
     inputBar = null;
+    historyPanel?.remove();
+    historyPanel = null;
+  }
+
+  function showHistory(selector, feedback) {
+    feedback.textContent = 'Loading history…';
+    sendMutation({
+      type: 'HISTORY_LIST', filePath: metadata?.filePath || null,
+      componentName: metadata?.componentName || null, selector,
+    }, (message) => {
+      if (message.type !== 'HISTORY') {
+        feedback.textContent = `⚠ ${message.message || 'Could not load history'}`;
+        return;
+      }
+      feedback.textContent = `${message.entries.length} revision${message.entries.length === 1 ? '' : 's'}`;
+      renderHistory(message.entries, feedback);
+    });
+  }
+
+  function renderHistory(entries, feedback) {
+    historyPanel?.remove();
+    historyPanel = document.createElement('div');
+    Object.assign(historyPanel.style, {
+      position: 'fixed', left: `${Math.max(8, selection.x)}px`, top: `${Math.min(window.innerHeight - 12, selection.y + selection.height + 8)}px`,
+      width: 'min(520px, calc(100vw - 16px))', maxHeight: '220px', overflowY: 'auto',
+      padding: '8px', border: '1px solid #00f2fe', borderRadius: '8px', background: 'rgba(4, 16, 25, .98)',
+      color: '#dffcff', font: '12px/1.3 system-ui, sans-serif', pointerEvents: 'auto', zIndex: '1',
+    });
+    if (!entries.length) {
+      historyPanel.textContent = 'No saved revisions for this component yet.';
+    } else {
+      entries.forEach((entry) => {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.textContent = `${new Date(entry.createdAt).toLocaleTimeString()} · ${entry.prompt}`;
+        Object.assign(row.style, {
+          display: 'block', width: '100%', margin: '3px 0', padding: '7px', border: '1px solid #255563',
+          borderRadius: '5px', background: '#0d2b38', color: '#dffcff', cursor: 'pointer', textAlign: 'left', font: 'inherit',
+        });
+        row.addEventListener('click', () => {
+          if (!window.confirm('Restore this revision? The current component file will be backed up first.')) return;
+          feedback.textContent = 'Restoring…';
+          sendMutation({ type: 'ROLLBACK_REQUEST', revisionId: entry.id }, (message) => {
+            feedback.textContent = message.status === 'SUCCESS' ? '✓ Revision restored' : `⚠ ${message.message || 'Restore failed'}`;
+            if (message.status === 'SUCCESS') historyPanel?.remove();
+          });
+        });
+        historyPanel.append(row);
+      });
+    }
+    root.append(historyPanel);
   }
 
   return {

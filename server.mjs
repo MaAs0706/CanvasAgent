@@ -10,6 +10,8 @@ if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
 const PORT = Number(process.env.PORT || 8080);
 const MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
 const PROJECT_ROOT = path.resolve(process.env.PROJECT_ROOT || process.cwd());
+const HISTORY_DIRECTORY = path.join(PROJECT_ROOT, '.canvasagent-backups');
+const HISTORY_FILE = path.join(HISTORY_DIRECTORY, 'history.json');
 const SYSTEM_INSTRUCTIONS = [
   'You are an automated JSX refactoring agent.',
   'Modify the provided code snippet according to the user instruction.',
@@ -31,6 +33,8 @@ const httpServer = http.createServer((request, response) => {
 const wss = new WebSocketServer({ server: httpServer });
 const connections = new Set();
 
+migrateLegacyHistory();
+
 wss.on('connection', (socket, request) => {
   connections.add(socket);
   hud('CONNECT', `${request.socket.remoteAddress || 'local'} — ${connections.size} active`, 'green');
@@ -38,10 +42,10 @@ wss.on('connection', (socket, request) => {
   socket.on('message', async (rawMessage) => {
     try {
       const payload = JSON.parse(rawMessage.toString());
-      if (payload.type !== 'MUTATE_REQUEST') {
-        throw new Error(`Unsupported message type: ${String(payload.type)}`);
-      }
-      await handleMutateRequest(socket, payload);
+      if (payload.type === 'MUTATE_REQUEST') await handleMutateRequest(socket, payload);
+      else if (payload.type === 'HISTORY_LIST') handleHistoryList(socket, payload);
+      else if (payload.type === 'ROLLBACK_REQUEST') handleRollbackRequest(socket, payload);
+      else throw new Error(`Unsupported message type: ${String(payload.type)}`);
     } catch (error) {
       hud('ERROR', error.message, 'red');
       send(socket, { status: 'ERROR', message: error.message });
@@ -116,11 +120,49 @@ async function handleMutateRequest(socket, payload) {
   ];
   const backupPath = createBackup(localFilePath);
   fs.writeFileSync(localFilePath, updatedLines.join('\n'), 'utf-8');
+  recordHistory({
+    filePath: localFilePath, componentName: componentName || null, lineNumber,
+    prompt: prompt.trim(), backupPath, kind: 'mutation',
+  });
 
   hud('WRITTEN', `${path.basename(localFilePath)} — HMR should refresh the page.`, 'green');
   send(socket, {
     status: 'SUCCESS', filePath: localFilePath, lineNumber, backupPath,
     message: 'File written to disk. HMR triggered.',
+  });
+}
+
+function handleHistoryList(socket, payload) {
+  const filePath = typeof payload.filePath === 'string' ? resolveProjectFile(payload.filePath) : null;
+  const componentName = typeof payload.componentName === 'string' ? payload.componentName : null;
+  const entries = readHistory()
+    .filter((entry) => (!filePath || entry.filePath === filePath) && (!componentName || entry.componentName === componentName))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 25)
+    .map(({ id, componentName: name, lineNumber, prompt, createdAt, kind }) => ({
+      id, componentName: name, lineNumber, prompt, createdAt, kind,
+    }));
+  send(socket, { type: 'HISTORY', status: 'SUCCESS', filePath, entries });
+}
+
+function handleRollbackRequest(socket, payload) {
+  const revision = readHistory().find((entry) => entry.id === payload.revisionId);
+  if (!revision) throw new Error('The requested revision no longer exists.');
+  const restorePath = revision.snapshotPath || revision.backupPath;
+  if (!isInsideProject(revision.filePath) || !restorePath || !fs.existsSync(restorePath)) {
+    throw new Error('The requested revision backup is unavailable.');
+  }
+
+  const backupPath = createBackup(revision.filePath);
+  fs.copyFileSync(restorePath, revision.filePath);
+  recordHistory({
+    filePath: revision.filePath, componentName: revision.componentName, lineNumber: revision.lineNumber,
+    prompt: `Rollback to ${new Date(revision.createdAt).toLocaleString()}`, backupPath, kind: 'rollback',
+  });
+  hud('ROLLBACK', `${path.basename(revision.filePath)} restored.`, 'green');
+  send(socket, {
+    type: 'ROLLBACK_COMPLETE', status: 'SUCCESS', filePath: revision.filePath,
+    message: 'Revision restored. HMR triggered.',
   });
 }
 
@@ -160,6 +202,56 @@ function createBackup(filePath) {
   fs.mkdirSync(path.dirname(backupPath), { recursive: true });
   fs.copyFileSync(filePath, backupPath);
   return backupPath;
+}
+
+function readHistory() {
+  try {
+    return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf-8'));
+  } catch (_) {
+    return [];
+  }
+}
+
+function recordHistory({ filePath, componentName, lineNumber, prompt, backupPath, kind }) {
+  const history = readHistory();
+  const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const snapshotPath = createRevisionSnapshot(filePath, id);
+  history.push({
+    id, filePath, componentName, lineNumber, prompt, backupPath, snapshotPath, kind, createdAt: new Date().toISOString(),
+  });
+  fs.mkdirSync(HISTORY_DIRECTORY, { recursive: true });
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify(history.slice(-200), null, 2), 'utf-8');
+}
+
+function createRevisionSnapshot(filePath, id) {
+  const snapshotPath = path.join(HISTORY_DIRECTORY, 'revisions', `${id}-${path.basename(filePath)}`);
+  fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+  fs.copyFileSync(filePath, snapshotPath);
+  return snapshotPath;
+}
+
+function migrateLegacyHistory() {
+  const history = readHistory();
+  let changed = false;
+  for (let index = 0; index < history.length; index += 1) {
+    const entry = history[index];
+    if (entry.snapshotPath && fs.existsSync(entry.snapshotPath)) continue;
+
+    // Earlier history entries stored the state *before* an edit. The next
+    // entry's backup is the state produced by this entry; the final entry's
+    // state is the current file.
+    const nextForFile = history.slice(index + 1).find((candidate) => (
+      candidate.filePath === entry.filePath && fs.existsSync(candidate.backupPath)
+    ));
+    const sourcePath = nextForFile?.backupPath || (fs.existsSync(entry.filePath) ? entry.filePath : null);
+    if (!sourcePath) continue;
+    entry.snapshotPath = createRevisionSnapshot(sourcePath, entry.id);
+    changed = true;
+  }
+  if (changed) {
+    fs.mkdirSync(HISTORY_DIRECTORY, { recursive: true });
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2), 'utf-8');
+  }
 }
 
 function sendFallback(socket, selector) {

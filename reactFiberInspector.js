@@ -1,56 +1,45 @@
 /**
- * Inspect a DOM node rendered by React and return source-oriented metadata.
+ * Return React source metadata (when available) for a DOM element.
  *
- * Usage:
- *   const node = document.elementFromPoint(x, y);
- *   const info = getReactFiberInfo(node);
- */
-
-const REACT_FIBER_KEY = /^(?:__reactFiber\$|__reactInternalInstance\$)/;
-const MAX_PROP_DEPTH = 4;
-
-/**
- * @param {Element | null | undefined} domNode A node returned by elementFromPoint.
- * @returns {{componentName: string | null, filePath: string | null, lineNumber: number | null, memoizedProps: object | null}}
+ * @param {Element | null | undefined} domNode A node from document.elementFromPoint().
+ * @returns {{isReact: boolean, componentName: string|null, filePath: string|null, lineNumber: number|null, props: object|null, selector: string|null}}
  */
 export function getReactFiberInfo(domNode) {
-  if (!domNode || domNode.nodeType !== Node.ELEMENT_NODE) {
-    return emptyInfo();
-  }
+  const selector = createCssSelector(domNode);
+  if (!isElement(domNode)) return createResult(false, null, null, null, null, selector);
 
-  const attributeFallback = readSourceAttributes(domNode);
-  const fiber = findFiberOnDomPath(domNode);
-
+  const domSource = readDomSource(domNode);
+  const fiber = findFiber(domNode);
   if (!fiber) {
-    return {
-      componentName: attributeFallback.componentName,
-      filePath: attributeFallback.filePath,
-      lineNumber: attributeFallback.lineNumber,
-      memoizedProps: null,
-    };
+    return createResult(false, domSource.componentName, domSource.filePath, domSource.lineNumber, null, selector);
   }
 
-  const componentFiber = findNearestNamedComponent(fiber) || fiber;
-  const source = componentFiber._debugSource || fiber._debugSource || null;
-  const props = componentFiber.memoizedProps ?? fiber.memoizedProps ?? null;
-
-  return {
-    componentName: getComponentName(componentFiber) || attributeFallback.componentName,
-    filePath: source?.fileName || attributeFallback.filePath,
-    lineNumber: toLineNumber(source?.lineNumber) || attributeFallback.lineNumber,
-    memoizedProps: makeJsonSafe(props),
-  };
+  const componentFiber = findNearestNamedComponent(fiber);
+  const inspectedFiber = componentFiber || fiber;
+  const source = findDebugSource(inspectedFiber);
+  return createResult(
+    true,
+    getComponentName(componentFiber) || domSource.componentName,
+    source.filePath || domSource.filePath,
+    source.lineNumber || domSource.lineNumber,
+    makeJsonSafe(inspectedFiber.memoizedProps || null),
+    selector,
+  );
 }
 
-function emptyInfo() {
-  return { componentName: null, filePath: null, lineNumber: null, memoizedProps: null };
+function createResult(isReact, componentName, filePath, lineNumber, props, selector) {
+  return { isReact, componentName, filePath, lineNumber, props, selector };
 }
 
-function findFiberOnDomPath(startNode) {
-  // A click may land on a plain child inserted below React's host element.
-  for (let node = startNode; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
+function isElement(value) {
+  return Boolean(value) && value.nodeType === 1;
+}
+
+function findFiber(startNode) {
+  // The exact target can be a non-React child inside a React host element.
+  for (let node = startNode; isElement(node); node = node.parentElement) {
     for (const key of Object.keys(node)) {
-      if (REACT_FIBER_KEY.test(key) && node[key]) return node[key];
+      if (/^(?:__reactFiber\$|__reactInternalInstance\$)/.test(key) && node[key]) return node[key];
     }
   }
   return null;
@@ -64,28 +53,36 @@ function findNearestNamedComponent(startFiber) {
 }
 
 function getComponentName(fiber) {
-  const type = fiber?.elementType || fiber?.type;
-  if (typeof type === 'string') return null; // Host DOM components such as div.
-
-  if (typeof type === 'function') {
-    return type.displayName || type.name || null;
-  }
-
+  const type = fiber?.type;
+  if (typeof type === 'function') return type.displayName || type.name || null;
   if (type && typeof type === 'object') {
+    // Covers memo() and forwardRef() wrappers.
     return type.displayName || type.type?.displayName || type.type?.name || null;
   }
-
-  return fiber?._debugOwner ? getComponentName(fiber._debugOwner) : null;
+  return null; // A string type is a host component, e.g. "button".
 }
 
-function readSourceAttributes(startNode) {
-  for (let node = startNode; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
-    const source = node.getAttribute('data-source');
-    const explicitLine = toLineNumber(node.getAttribute('data-inspector-line'));
-    if (source || explicitLine) {
-      const parsed = parseSource(source);
+function findDebugSource(startFiber) {
+  for (let fiber = startFiber; fiber; fiber = fiber.return) {
+    const source = fiber._debugSource || fiber.memoizedProps?._source;
+    if (source && typeof source === 'object') {
+      const filePath = source.fileName || source.filePath || null;
+      const lineNumber = positiveInteger(source.lineNumber || source.line);
+      if (filePath || lineNumber) return { filePath, lineNumber };
+    }
+  }
+  return { filePath: null, lineNumber: null };
+}
+
+function readDomSource(startNode) {
+  for (let node = startNode; isElement(node); node = node.parentElement) {
+    const rawSource = node.getAttribute('data-source');
+    const explicitLine = positiveInteger(node.getAttribute('data-inspector-line'));
+    const componentName = node.getAttribute('data-component') || null;
+    if (rawSource || explicitLine || componentName) {
+      const parsed = parseSource(rawSource);
       return {
-        componentName: node.getAttribute('data-component-name') || null,
+        componentName,
         filePath: parsed.filePath,
         lineNumber: explicitLine || parsed.lineNumber,
       };
@@ -94,28 +91,52 @@ function readSourceAttributes(startNode) {
   return { componentName: null, filePath: null, lineNumber: null };
 }
 
-function parseSource(value) {
-  if (!value) return { filePath: null, lineNumber: null };
-
+function parseSource(rawSource) {
+  if (!rawSource) return { filePath: null, lineNumber: null };
   try {
-    const parsed = JSON.parse(value);
-    if (parsed && typeof parsed === 'object') {
+    const source = JSON.parse(rawSource);
+    if (source && typeof source === 'object') {
       return {
-        filePath: parsed.fileName || parsed.filePath || null,
-        lineNumber: toLineNumber(parsed.lineNumber || parsed.line),
+        filePath: source.fileName || source.filePath || null,
+        lineNumber: positiveInteger(source.lineNumber || source.line),
       };
     }
   } catch (_) {
-    // Common transforms encode source as "path/to/file.tsx:42[:column]".
+    // Also accept a common "absolute/path.tsx:42[:column]" transform format.
   }
-
-  const match = value.match(/^(.*):(\d+)(?::\d+)?$/);
+  const match = rawSource.match(/^(.*):(\d+)(?::\d+)?$/);
   return match
-    ? { filePath: match[1] || null, lineNumber: toLineNumber(match[2]) }
-    : { filePath: value, lineNumber: null };
+    ? { filePath: match[1] || null, lineNumber: positiveInteger(match[2]) }
+    : { filePath: rawSource, lineNumber: null };
 }
 
-function toLineNumber(value) {
+function createCssSelector(element) {
+  if (!isElement(element)) return null;
+  if (element.id) return `#${escapeCss(element.id)}`;
+
+  const parts = [];
+  for (let node = element; isElement(node) && node !== document.documentElement; node = node.parentElement) {
+    let part = node.tagName.toLowerCase();
+    if (node.id) {
+      parts.unshift(`${part}#${escapeCss(node.id)}`);
+      break;
+    }
+    const classes = [...node.classList].slice(0, 2);
+    if (classes.length) part += classes.map((name) => `.${escapeCss(name)}`).join('');
+    const siblings = node.parentElement
+      ? [...node.parentElement.children].filter((child) => child.tagName === node.tagName)
+      : [];
+    if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
+    parts.unshift(part);
+  }
+  return parts.join(' > ');
+}
+
+function escapeCss(value) {
+  return globalThis.CSS?.escape ? CSS.escape(value) : String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+}
+
+function positiveInteger(value) {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : null;
 }
@@ -125,15 +146,13 @@ function makeJsonSafe(value, depth = 0, seen = new WeakSet()) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : String(value);
   if (typeof value === 'bigint') return String(value);
   if (typeof value === 'function' || typeof value === 'symbol') return `[${typeof value}]`;
-  if (depth >= MAX_PROP_DEPTH) return '[truncated]';
+  if (depth >= 4) return '[truncated]';
   if (typeof value !== 'object') return String(value);
   if (seen.has(value)) return '[circular]';
   seen.add(value);
-
   if (Array.isArray(value)) return value.map((item) => makeJsonSafe(item, depth + 1, seen));
-  const safe = {};
-  for (const [key, item] of Object.entries(value)) {
-    safe[key] = makeJsonSafe(item, depth + 1, seen);
-  }
-  return safe;
+
+  const result = {};
+  for (const [key, item] of Object.entries(value)) result[key] = makeJsonSafe(item, depth + 1, seen);
+  return result;
 }

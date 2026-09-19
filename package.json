@@ -1,0 +1,21 @@
+{
+  "name": "viewport-hud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "bridge": "node server.mjs",
+    "check": "node --check background.js && node --check content.js && node --check reactFiberInspector.js && node --check server.mjs"
+  },
+  "dependencies": {
+    "openai": "^6.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "vite": "^7.0.0"
+  }
+}

@@ -17,10 +17,16 @@ const HUD_ROOT_ID = 'viewport-hud-root';
 const SOCKET_URL = 'ws://localhost:8080';
 let hud = null;
 let socket = null;
+let pendingMutationListener = null;
+
+console.info('[Viewport HUD] Content script loaded.', window.location.href);
 
 document.addEventListener('keydown', (event) => {
-  if (event.altKey && event.key.toLowerCase() === 'a' && !isTextInput(event.target)) {
+  // On macOS, Option+A may produce "å" for event.key. event.code identifies
+  // the physical A key regardless of keyboard layout or modifier output.
+  if (event.altKey && event.code === 'KeyA' && !isTextInput(event.target)) {
     event.preventDefault();
+    console.info('[Viewport HUD] Shortcut received.');
     toggleHud();
   }
 }, true);
@@ -33,9 +39,11 @@ function toggleHud() {
   if (hud) {
     hud.destroy();
     hud = null;
+    console.info('[Viewport HUD] Overlay closed.');
     return;
   }
   hud = createHud();
+  console.info('[Viewport HUD] Overlay opened.');
 }
 
 function createHud() {
@@ -149,7 +157,9 @@ function createHud() {
       width: 'min(360px, 42vw)', border: '0', outline: '0', color: '#fff',
       background: 'transparent', font: 'inherit',
     });
-    inputBar.append(badge, input);
+    const feedback = document.createElement('span');
+    Object.assign(feedback.style, { color: '#9ceff4', whiteSpace: 'nowrap' });
+    inputBar.append(badge, input, feedback);
     root.append(inputBar);
     input.focus();
 
@@ -157,6 +167,7 @@ function createHud() {
       event.preventDefault();
       const prompt = input.value.trim();
       if (!prompt) return;
+      feedback.textContent = 'Sending…';
       sendMutation({
         type: 'MUTATE_REQUEST',
         filePath: metadata?.filePath || null,
@@ -164,6 +175,11 @@ function createHud() {
         componentName: metadata?.componentName || null,
         prompt,
         selector,
+      }, (message) => {
+        if (message.status === 'SUCCESS') feedback.textContent = '✓ HMR triggered';
+        else if (message.status === 'FALLBACK_CSS') feedback.textContent = '↗ CSS preview applied';
+        else feedback.textContent = `⚠ ${message.message || 'Request failed'}`;
+        if (message.status === 'FALLBACK_CSS') applyCssPreview(targetElement, message.css);
       });
       applyImmediateFeedback(targetElement);
       input.value = '';
@@ -190,12 +206,25 @@ function rectangleFrom(start, end) {
   };
 }
 
-function sendMutation(payload) {
-  if (!socket || socket.readyState > WebSocket.OPEN) socket = new WebSocket(SOCKET_URL);
+function sendMutation(payload, onStatus) {
+  pendingMutationListener = onStatus;
+  if (!socket || socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
+    socket = new WebSocket(SOCKET_URL);
+    socket.addEventListener('message', (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.status !== 'CONNECTED') pendingMutationListener?.(message);
+      } catch (_) {
+        pendingMutationListener?.({ status: 'ERROR', message: 'Invalid bridge response.' });
+      }
+    });
+    socket.addEventListener('error', () => {
+      pendingMutationListener?.({ status: 'ERROR', message: 'Local bridge is unavailable.' });
+    });
+  }
   const send = () => socket.send(JSON.stringify(payload));
   if (socket.readyState === WebSocket.OPEN) send();
   else socket.addEventListener('open', send, { once: true });
-  socket.addEventListener('error', () => console.warn('[Viewport HUD] WebSocket bridge is unavailable.'), { once: true });
 }
 
 function applyImmediateFeedback(element) {
@@ -206,6 +235,14 @@ function applyImmediateFeedback(element) {
       outline: '2px solid #00f2fe', boxShadow: '0 0 15px rgba(0, 242, 254, 0.8)',
     });
   }, 10);
+}
+
+function applyCssPreview(element, cssText) {
+  if (!cssText) return;
+  cssText.split(';').forEach((declaration) => {
+    const [property, value] = declaration.split(':').map((part) => part?.trim());
+    if (property && value) element.style.setProperty(property, value);
+  });
 }
 
 function cssSelector(element) {

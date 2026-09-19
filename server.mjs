@@ -13,6 +13,8 @@ const PROJECT_ROOT = path.resolve(process.env.PROJECT_ROOT || process.cwd());
 const SYSTEM_INSTRUCTIONS = [
   'You are an automated JSX refactoring agent.',
   'Modify the provided code snippet according to the user instruction.',
+  'Return the complete supplied snippet, not only the changed lines.',
+  'Preserve imports and exports required for the snippet to compile in its original file.',
   'Return ONLY the refactored code snippet inside a ```jsx block.',
   'Do not include markdown conversational text outside the code block.',
 ].join(' ');
@@ -106,6 +108,7 @@ async function handleMutateRequest(socket, payload) {
   });
 
   const refactoredCode = extractJsxBlock(response.output_text);
+  validateRefactor(window.code, refactoredCode);
   const updatedLines = [
     ...lines.slice(0, window.startLine),
     ...refactoredCode.split(/\r?\n/),
@@ -133,6 +136,13 @@ function extractJsxBlock(text) {
   const match = String(text || '').match(/```(?:jsx|tsx|javascript|js)?\s*\n([\s\S]*?)```/i);
   if (!match) throw new Error('Model response did not contain the required fenced JSX block.');
   return match[1].replace(/\n$/, '');
+}
+
+function validateRefactor(originalCode, refactoredCode) {
+  if (!refactoredCode.trim()) throw new Error('Model returned an empty code snippet.');
+  if (/\bexport\s+default\b/.test(originalCode) && !/\bexport\s+default\b/.test(refactoredCode)) {
+    throw new Error('Model response removed the required default export; original file was not changed.');
+  }
 }
 
 function isInsideProject(filePath) {

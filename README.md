@@ -9,7 +9,7 @@
 5. At `chrome://extensions`, enable Developer mode and choose **Load unpacked** for this folder.
 6. On the demo page, press `Alt + A`, draw over **Complete purchase**, enter a request, and press Enter.
 
-The demo button includes source attributes so the HUD can reliably map it to `src/App.jsx`.
+Vite automatically adds source attributes to every native JSX element in development, so the HUD can map any selected part of this local app back to its source file and line. The demo button lives in a dedicated file so a surgical replacement cannot overwrite the surrounding demo page.
 
 ## Safety
 

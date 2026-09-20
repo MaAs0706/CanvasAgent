@@ -60,19 +60,36 @@ The API key remains in the developer’s local `.env` file; it is never exposed 
 
 ### Demo / Pitch Video
 
-_Add your demo or pitch video link here._
+https://drive.google.com/file/d/1UECNPmYKXKU8VWDCS9Wm0UcbVh5aKx4n/view?usp=drive_link
 
-A recommended demo sequence:
-
-1. Select a metric card or primary button with `Option + A`.
-2. Request a visual or responsive change.
-3. Show the generated review panel.
-4. Apply the patch and show the Vite HMR update.
-5. Open **History** and restore a previous checkpoint.
 
 ## Screenshots
 
-_Add screenshots or GIFs of the overlay, review panel, HMR update, and history rollback here._
+### Spatial element selection
+
+![Viewport HUD selecting a metric card](./Screenshot%202026-09-20%20at%2009.18.03.png)
+
+The full-screen HUD lets a developer select a visible component and opens a prompt bar with its mapped React source location.
+
+### Component revision state
+
+![Viewport HUD history panel before changes](./Screenshot%202026-09-20%20at%2009.18.10.png)
+
+The History panel makes it clear when a selected component has no saved revisions yet.
+
+### Local bridge and HMR
+
+![Local WebSocket bridge reporting a two-file update](./Screenshot%202026-09-20%20at%2009.18.39.png)
+
+The local Node.js bridge receives the request, writes the reviewed patch, and reports when Vite HMR should refresh the app.
+
+### Revision history
+
+![Viewport HUD displaying saved component revisions](./Screenshot%202026-09-20%20at%2009.18.59.png)
+
+Each applied change is available as a component checkpoint for visual rollback.
+
+
 
 ## How to Run Locally
 

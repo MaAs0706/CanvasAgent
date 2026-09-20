@@ -1,98 +1,122 @@
 # Viewport HUD
 
-**Viewport HUD** is a spatial AI frontend-refactoring tool. Instead of searching through a codebase to find the component behind a visible UI element, a developer selects it directly in the browser, describes the desired change, and receives a local source update through Hot Module Replacement (HMR).
+## Overview
 
-```text
-Select an element in the browser
-→ identify its React/source metadata
-→ send a focused refactoring request to a local bridge
-→ update source code on disk
-→ let Vite refresh the UI
+Viewport HUD is a spatial AI frontend-refactoring tool for local React projects. Instead of switching between a browser preview, DevTools, an editor, and an AI chat, developers select an interface element directly in the browser, describe the change they want, review the proposed code patch, and apply it to their local project.
+
+The changed JSX or CSS is written to disk by a local bridge, then Vite Hot Module Replacement (HMR) updates the running page. Every applied patch is saved as a rollback checkpoint.
+
+## Problem Statement
+
+Small frontend changes often require a surprisingly slow workflow: find the right element in the browser, inspect it, search a large codebase for the component and style rule, make the edit, then return to the browser to verify it.
+
+Designers and QA teammates also struggle to communicate visual changes precisely. A ticket such as “this card should feel more glassy on mobile” leaves the developer to locate the component and interpret the request.
+
+## Solution
+
+Viewport HUD makes the browser preview a direct visual input surface.
+
+1. Press `Alt + A` / `Option + A` and draw a box over a UI element.
+2. The extension identifies the element’s React/source metadata when available.
+3. Enter a natural-language change request.
+4. A local Node.js bridge reads a focused source-code window and asks OpenAI for a structured JSX/CSS proposal.
+5. Review the diff, then apply it only when it looks correct.
+6. Vite updates the local app with HMR, while Viewport HUD stores a revision for rollback.
+
+For sites whose source code is not on the local machine, Viewport HUD uses a safe CSS-preview fallback rather than claiming it can edit a deployed website’s source.
+
+## Features
+
+- Full-screen spatial selection overlay, activated with `Alt + A` / `Option + A` or the extension toolbar button.
+- React Fiber inspection with Vite development-time source-attribute fallback.
+- Natural-language React JSX and CSS refactoring proposals through OpenAI.
+- Review-before-apply workflow with an in-browser patch panel.
+- Local disk patching and instant Vite HMR refresh.
+- Persistent per-component history and rollback checkpoints.
+- CSS preview fallback for elements without accessible local source.
+- A dashboard-style demo surface with navigation, hero content, metric cards, buttons, status, progress, and responsive task cards.
+
+## Tech Stack
+
+- **Frontend:** React 19, Vite, HTML Canvas API, CSS
+- **Browser Extension:** Chrome Extension Manifest V3
+- **Backend:** Node.js ES Modules, native `fs`, `path`, and `http`
+- **Database:** None; revision history is stored locally in `.canvasagent-backups/`
+- **APIs / Services:** OpenAI Responses API, WebSockets (`ws`)
+- **Hosting / Deployment:** Local Vite development server; Chrome/Arc unpacked extension
+- **Other Tools:** Babel/Vite transform plugin for JSX source metadata, Git
+
+## Codex / OpenAI Usage
+
+OpenAI tools were used as a collaborative development assistant during the hackathon for ideation, architecture planning, Chrome Extension Manifest V3 setup, React Fiber/source-inspection design, local WebSocket bridge implementation, debugging, testing, UI iteration, and documentation.
+
+At runtime, the local bridge uses the OpenAI API to convert a selected component’s focused JSX/CSS context and the user’s request into a structured refactoring proposal. The proposal is displayed for review before any source file is written.
+
+The API key remains in the developer’s local `.env` file; it is never exposed to the browser extension.
+
+## Demo
+
+
+
+### Demo / Pitch Video
+
+_Add your demo or pitch video link here._
+
+A recommended demo sequence:
+
+1. Select a metric card or primary button with `Option + A`.
+2. Request a visual or responsive change.
+3. Show the generated review panel.
+4. Apply the patch and show the Vite HMR update.
+5. Open **History** and restore a previous checkpoint.
+
+## Screenshots
+
+_Add screenshots or GIFs of the overlay, review panel, HMR update, and history rollback here._
+
+## How to Run Locally
+
+```bash
+git clone https://github.com/MaAs0706/CanvasAgent.git
+cd CanvasAgent
+npm install
 ```
 
-## Product vision
+Create a `.env` file from `.env.example` and set the required values:
 
-Viewport HUD has two complementary modes:
+```env
+OPENAI_API_KEY=your_openai_api_key
+PROJECT_ROOT=/absolute/path/to/CanvasAgent
+OPENAI_MODEL=gpt-4o
+PORT=8080
+```
 
-| Mode | Where it runs | Outcome |
-| --- | --- | --- |
-| Localhost Mode | A local React/Vite project | Source-aware JSX edits, disk writes, HMR, and revision rollback |
-| Production Mode | A site whose source is not available locally | Element selection, temporary CSS preview, and a future exportable CSS patch |
+Start the Vite demo in one terminal:
 
-The goal is to reduce context switching between the browser preview, DevTools, editor, and AI chat. The browser becomes the spatial surface for frontend iteration.
+```bash
+npm run dev
+```
 
-## Architecture
+Start the local mutation bridge in a second terminal:
 
-| Layer | Files | Responsibility |
-| --- | --- | --- |
-| Chrome Extension | `manifest.json`, `background.js`, `content.js` | Injects the overlay, captures a selection, presents the HUD, and communicates with the local bridge |
-| Source Inspector | `reactFiberInspector.js` | Finds React Fiber metadata when available and falls back to DOM source attributes or CSS selectors |
-| Development Instrumentation | `vite-plugin-viewport-hud-source.js` | Adds `data-source`, line, and component metadata to native JSX DOM elements during Vite development |
-| Local Bridge | `server.mjs` | Receives WebSocket requests, reads source context, calls OpenAI, writes safe patches, and maintains history |
-| Demo App | `src/` | A Vite React app used to demonstrate source-aware visual editing |
+```bash
+npm run bridge
+```
 
-## Current capabilities
+Then load the browser extension:
 
-- Full-screen selection overlay, activated with `Alt + A` / `Option + A`, or by clicking the extension toolbar icon.
-- React Fiber inspection plus reliable development-time JSX source attributes.
-- WebSocket bridge at `ws://localhost:8080`.
-- OpenAI-powered JSX refactoring within a focused source window.
-- Automatic Vite HMR after a successful disk write.
-- Backups and persistent revision history.
-- Per-component rollback from the HUD **History** button.
-- CSS-preview fallback when a selected element has no local source mapping.
+1. Open `chrome://extensions` in Chrome or Arc.
+2. Enable **Developer mode**.
+3. Select **Load unpacked** and choose this project folder.
+4. Open the Vite localhost URL.
+5. Press `Alt + A` / `Option + A`, select an element, and submit a request.
 
-## Run the local demo
+If you edit extension files, reload the extension from `chrome://extensions` and hard-refresh the Vite page.
 
-1. Copy `.env.example` to `.env` and set your local values:
+## Additional Notes
 
-   ```env
-   OPENAI_API_KEY=your_key_here
-   PROJECT_ROOT=/absolute/path/to/Canvas Agent
-   OPENAI_MODEL=gpt-4o
-   PORT=8080
-   ```
-
-2. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-3. Start the Vite demo in one terminal:
-
-   ```bash
-   npm run dev
-   ```
-
-4. Start the local bridge in another terminal:
-
-   ```bash
-   npm run bridge
-   ```
-
-5. In Chrome/Arc, open `chrome://extensions`, enable Developer mode, select **Load unpacked**, and choose this repository folder.
-
-6. Open the Vite localhost URL, activate Viewport HUD, draw a selection over an element, type a request, and submit it.
-
-If extension files change, reload the extension at `chrome://extensions` and hard-refresh the Vite page.
-
-## History and rollback
-
-Every mutation first generates a reviewable diff. Only the **Apply changes** action writes to disk; that action backs up the current source file, then saves a revision snapshot representing the resulting change. Select an element, click **History**, choose a revision, and confirm restoration. A rollback also backs up the current file, so it can be reversed later.
-
-Backups and history live in `.canvasagent-backups/`, which is intentionally ignored by Git.
-
-## Safety boundaries
-
-- Never commit `.env` or expose the API key to extension/browser code.
-- The bridge only writes under `PROJECT_ROOT`.
-- The bridge rejects model responses that remove a required default export from the patched context.
-- The current patching strategy is a focused line-window replacement wrapped in a preview/apply transaction; it is suitable for the demo but should evolve toward AST-aware edits and compile validation.
-- Viewport HUD cannot rewrite the deployed source code of unrelated external websites. Those sites use Production Mode CSS previews/patches instead.
-
-## Next stage
-
-The current MVP proves the core loop: **visual selection → source mapping → AI patch → HMR → rollback**.
-
-The next milestone is style-aware refactoring: detect CSS, CSS Modules, Tailwind, and inline styles so requests such as “make this button responsive” can safely edit the styling layer as well as the JSX component.
+- Viewport HUD is designed for local development projects. It cannot write source code for unrelated production websites; those use CSS preview fallback mode.
+- React Fiber is an internal React implementation detail, so the demo also uses Vite/Babel-injected source attributes for more reliable local mapping.
+- Patches are generated from a focused line window and validated before writing. The next technical improvement is AST-aware editing plus automated compile validation.
+- Backups and revision snapshots are stored in `.canvasagent-backups/`, which is ignored by Git.
+- Run `npm run check` to validate the standalone extension and bridge JavaScript files.

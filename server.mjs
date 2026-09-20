@@ -122,7 +122,7 @@ async function handlePreviewRequest(socket, payload) {
           window.code,
           '```',
           ...(styleTarget ? [
-            `If the request needs a stylesheet change, cssCode must replace exactly lines ${styleTarget.window.startLine + 1}-${styleTarget.window.endLine} in ${styleTarget.filePath}; otherwise return an empty cssCode string.`,
+            `If the request needs a stylesheet change, cssCode must replace exactly the CSS rule on lines ${styleTarget.window.startLine + 1}-${styleTarget.window.endLine} in ${styleTarget.filePath}; otherwise return an empty cssCode string.`,
             'CSS context:', '```css', styleTarget.window.code, '```',
           ] : []),
         ].join('\n'),
@@ -141,6 +141,9 @@ async function handlePreviewRequest(socket, payload) {
     const cssCode = proposal.cssCode;
     const cssLines = styleTarget.fullCode.split(/\r?\n/);
     if (!hasBalancedBraces(cssCode)) throw new Error('Generated CSS has unbalanced braces.');
+    if (!classNames.some((className) => cssCode.includes(`.${className}`))) {
+      throw new Error('Generated CSS does not preserve the selected element selector.');
+    }
     patches.push({
       filePath: styleTarget.filePath, componentName: componentName || null, lineNumber: styleTarget.window.startLine + 1,
       prompt: `Style update: ${prompt.trim()}`, kind: 'style-mutation',
@@ -168,7 +171,8 @@ function handleApplyRequest(socket, payload) {
     for (const patch of backups) fs.copyFileSync(patch.backupPath, patch.filePath);
     throw error;
   }
-  for (const patch of backups) recordHistory(patch);
+  const transactionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  for (const patch of backups) recordHistory({ ...patch, transactionId });
   pendingPreviews.delete(payload.previewId);
   hud('WRITTEN', `${backups.length} file${backups.length === 1 ? '' : 's'} updated — HMR should refresh.`, 'green');
   send(socket, { type: 'APPLIED', status: 'SUCCESS', message: 'Changes applied. HMR triggered.' });
@@ -177,35 +181,84 @@ function handleApplyRequest(socket, payload) {
 function handleHistoryList(socket, payload) {
   const filePath = typeof payload.filePath === 'string' ? resolveProjectFile(payload.filePath) : null;
   const componentName = typeof payload.componentName === 'string' ? payload.componentName : null;
-  const entries = readHistory()
-    .filter((entry) => (!filePath || entry.filePath === filePath) && (!componentName || entry.componentName === componentName))
+  const history = readHistory();
+  const matching = history.filter((entry) => (
+    entry.kind !== 'rollback'
+    && (componentName ? entry.componentName === componentName : entry.filePath === filePath)
+  ));
+  const seen = new Set();
+  const entries = matching
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .filter((entry) => {
+      const key = historyCheckpointKey(history, entry);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .slice(0, 25)
-    .map(({ id, componentName: name, lineNumber, prompt, createdAt, kind }) => ({
-      id, componentName: name, lineNumber, prompt, createdAt, kind,
+    .map((entry) => ({
+      id: entry.id, componentName: entry.componentName, lineNumber: entry.lineNumber,
+      prompt: displayPrompt(entry.prompt), createdAt: entry.createdAt, kind: entry.kind,
+      fileCount: checkpointEntries(history, entry).length,
     }));
   send(socket, { type: 'HISTORY', status: 'SUCCESS', filePath, entries });
 }
 
 function handleRollbackRequest(socket, payload) {
-  const revision = readHistory().find((entry) => entry.id === payload.revisionId);
+  const history = readHistory();
+  const revision = history.find((entry) => entry.id === payload.revisionId);
   if (!revision) throw new Error('The requested revision no longer exists.');
-  const restorePath = revision.snapshotPath || revision.backupPath;
-  if (!isInsideProject(revision.filePath) || !restorePath || !fs.existsSync(restorePath)) {
-    throw new Error('The requested revision backup is unavailable.');
+  const revisions = checkpointEntries(history, revision);
+  const backups = [];
+  try {
+    for (const entry of revisions) {
+      const restorePath = entry.snapshotPath || entry.backupPath;
+      if (!isInsideProject(entry.filePath) || !restorePath || !fs.existsSync(restorePath)) {
+        throw new Error('The requested revision backup is unavailable.');
+      }
+      backups.push({ ...entry, restorePath, backupPath: createBackup(entry.filePath) });
+    }
+    for (const entry of backups) fs.copyFileSync(entry.restorePath, entry.filePath);
+  } catch (error) {
+    for (const entry of backups) fs.copyFileSync(entry.backupPath, entry.filePath);
+    throw error;
   }
-
-  const backupPath = createBackup(revision.filePath);
-  fs.copyFileSync(restorePath, revision.filePath);
-  recordHistory({
-    filePath: revision.filePath, componentName: revision.componentName, lineNumber: revision.lineNumber,
-    prompt: `Rollback to ${new Date(revision.createdAt).toLocaleString()}`, backupPath, kind: 'rollback',
-  });
-  hud('ROLLBACK', `${path.basename(revision.filePath)} restored.`, 'green');
+  const transactionId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  for (const entry of backups) {
+    recordHistory({
+      filePath: entry.filePath, componentName: entry.componentName, lineNumber: entry.lineNumber,
+      prompt: `Rollback to ${new Date(revision.createdAt).toLocaleString()}`,
+      backupPath: entry.backupPath, kind: 'rollback', transactionId,
+    });
+  }
+  hud('ROLLBACK', `${backups.length} file${backups.length === 1 ? '' : 's'} restored.`, 'green');
   send(socket, {
     type: 'ROLLBACK_COMPLETE', status: 'SUCCESS', filePath: revision.filePath,
     message: 'Revision restored. HMR triggered.',
   });
+}
+
+function displayPrompt(prompt) {
+  return String(prompt || '').replace(/^Style update:\s*/, '');
+}
+
+function historyCheckpointKey(history, entry) {
+  if (entry.transactionId) return `transaction:${entry.transactionId}`;
+  const group = checkpointEntries(history, entry);
+  return `legacy:${group.map((candidate) => candidate.id).sort().join(':')}`;
+}
+
+function checkpointEntries(history, entry) {
+  if (entry.transactionId) return history.filter((candidate) => candidate.transactionId === entry.transactionId);
+  if (entry.kind === 'rollback') return [entry];
+  const prompt = displayPrompt(entry.prompt);
+  const timestamp = Date.parse(entry.createdAt);
+  return history.filter((candidate) => (
+    candidate.componentName === entry.componentName
+    && candidate.kind !== 'rollback'
+    && displayPrompt(candidate.prompt) === prompt
+    && Math.abs(Date.parse(candidate.createdAt) - timestamp) < 10_000
+  ));
 }
 
 function surgicalWindow(lines, lineNumber) {
@@ -255,15 +308,49 @@ function extractCssBlock(text) {
 
 function findStyleTarget(classNames) {
   if (!Array.isArray(classNames) || !classNames.length) return null;
+  const candidates = [];
   for (const filePath of listProjectCssFiles(PROJECT_ROOT)) {
     const fullCode = fs.readFileSync(filePath, 'utf-8');
-    const selectorIndex = classNames.map((name) => fullCode.indexOf(`.${name}`)).find((index) => index >= 0);
-    if (selectorIndex === undefined) continue;
-    const beforeSelector = fullCode.slice(0, selectorIndex);
-    const lineNumber = beforeSelector.split(/\r?\n/).length;
-    return { filePath, fullCode, window: surgicalWindow(fullCode.split(/\r?\n/), lineNumber) };
+    for (const className of classNames) {
+      let selectorIndex = fullCode.indexOf(`.${className}`);
+      while (selectorIndex >= 0) {
+        const window = cssRuleWindow(fullCode, selectorIndex);
+        if (window) {
+          const selector = fullCode.slice(window.selectorStart, window.openingBrace).trim();
+          // A dedicated rule such as `.checkout-button { ... }` is safer than
+          // a shared rule such as `.checkout-button, .secondary-button { ... }`.
+          const score = selector === `.${className}` ? 1000
+            : selector.startsWith(`.${className}:`) ? 900
+              : selector.includes(',') ? 100 : 400;
+          candidates.push({ filePath, fullCode, window, score });
+        }
+        selectorIndex = fullCode.indexOf(`.${className}`, selectorIndex + className.length + 1);
+      }
+    }
   }
-  return null;
+  return candidates.sort((first, second) => second.score - first.score)[0] || null;
+}
+
+function cssRuleWindow(fullCode, selectorIndex) {
+  const openingBrace = fullCode.indexOf('{', selectorIndex);
+  if (openingBrace < 0) return null;
+  let depth = 0;
+  let closingBrace = -1;
+  for (let index = openingBrace; index < fullCode.length; index += 1) {
+    if (fullCode[index] === '{') depth += 1;
+    if (fullCode[index] === '}') depth -= 1;
+    if (depth === 0) {
+      closingBrace = index;
+      break;
+    }
+  }
+  if (closingBrace < 0) return null;
+
+  const selectorStart = fullCode.lastIndexOf('\n', selectorIndex) + 1;
+  const startLine = fullCode.slice(0, selectorStart).split(/\r?\n/).length - 1;
+  const endLine = fullCode.slice(0, closingBrace + 1).split(/\r?\n/).length;
+  const lines = fullCode.split(/\r?\n/);
+  return { startLine, endLine, selectorStart, openingBrace, code: lines.slice(startLine, endLine).join('\n') };
 }
 
 function listProjectCssFiles(directory) {
@@ -308,12 +395,12 @@ function readHistory() {
   }
 }
 
-function recordHistory({ filePath, componentName, lineNumber, prompt, backupPath, kind }) {
+function recordHistory({ filePath, componentName, lineNumber, prompt, backupPath, kind, transactionId = null }) {
   const history = readHistory();
   const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const snapshotPath = createRevisionSnapshot(filePath, id);
   history.push({
-    id, filePath, componentName, lineNumber, prompt, backupPath, snapshotPath, kind, createdAt: new Date().toISOString(),
+    id, filePath, componentName, lineNumber, prompt, backupPath, snapshotPath, kind, transactionId, createdAt: new Date().toISOString(),
   });
   fs.mkdirSync(HISTORY_DIRECTORY, { recursive: true });
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(history.slice(-200), null, 2), 'utf-8');

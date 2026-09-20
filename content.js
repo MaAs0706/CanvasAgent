@@ -275,7 +275,8 @@ function createHud() {
       entries.forEach((entry) => {
         const row = document.createElement('button');
         row.type = 'button';
-        row.textContent = `${new Date(entry.createdAt).toLocaleTimeString()} · ${entry.prompt}`;
+        const fileLabel = entry.fileCount > 1 ? ` · ${entry.fileCount} files` : '';
+        row.textContent = `${new Date(entry.createdAt).toLocaleTimeString()} · ${entry.prompt}${fileLabel}`;
         Object.assign(row.style, {
           display: 'block', width: '100%', margin: '3px 0', padding: '7px', border: '1px solid #255563',
           borderRadius: '5px', background: '#0d2b38', color: '#dffcff', cursor: 'pointer', textAlign: 'left', font: 'inherit',

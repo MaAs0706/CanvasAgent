@@ -68,6 +68,7 @@ function createHud() {
   let metadata = null;
   let inputBar = null;
   let historyPanel = null;
+  let previewPanel = null;
 
   const resize = () => {
     canvas.width = window.innerWidth * devicePixelRatio;
@@ -120,7 +121,7 @@ function createHud() {
     const centerY = selection.y + selection.height / 2;
 
     canvas.style.pointerEvents = 'none';
-    targetElement = document.elementFromPoint(centerX, centerY);
+    targetElement = findBestTargetElement(centerX, centerY, selection);
     canvas.style.pointerEvents = 'auto';
 
     if (!targetElement || targetElement.closest(`#${HUD_ROOT_ID}`)) return;
@@ -176,7 +177,7 @@ function createHud() {
       event.preventDefault();
       const prompt = input.value.trim();
       if (!prompt) return;
-      feedback.textContent = 'Sending…';
+      feedback.textContent = 'Generating review…';
       sendMutation({
         type: 'MUTATE_REQUEST',
         filePath: metadata?.filePath || null,
@@ -184,8 +185,13 @@ function createHud() {
         componentName: metadata?.componentName || null,
         prompt,
         selector,
+        classNames: [...targetElement.classList],
+        computedStyle: getStyleSummary(targetElement),
       }, (message) => {
-        if (message.status === 'SUCCESS') feedback.textContent = '✓ HMR triggered';
+        if (message.type === 'PREVIEW') {
+          feedback.textContent = 'Review changes';
+          renderPreview(message, feedback);
+        } else if (message.status === 'SUCCESS') feedback.textContent = '✓ HMR triggered';
         else if (message.status === 'FALLBACK_CSS') feedback.textContent = '↗ CSS preview applied';
         else feedback.textContent = `⚠ ${message.message || 'Request failed'}`;
         if (message.status === 'FALLBACK_CSS') applyCssPreview(targetElement, message.css);
@@ -200,6 +206,42 @@ function createHud() {
     inputBar = null;
     historyPanel?.remove();
     historyPanel = null;
+    previewPanel?.remove();
+    previewPanel = null;
+  }
+
+  function renderPreview(preview, feedback) {
+    previewPanel?.remove();
+    previewPanel = document.createElement('div');
+    const previewPosition = panelPosition(320);
+    Object.assign(previewPanel.style, {
+      position: 'fixed', left: `${previewPosition.left}px`, top: `${previewPosition.top}px`,
+      width: 'min(620px, calc(100vw - 16px))', maxHeight: '320px', overflow: 'auto', padding: '10px',
+      border: '1px solid #00f2fe', borderRadius: '8px', background: 'rgba(4, 16, 25, .98)', color: '#dffcff',
+      font: '12px/1.35 ui-monospace, SFMono-Regular, monospace', pointerEvents: 'auto',
+    });
+    const title = document.createElement('div');
+    title.textContent = `Review changes · ${preview.summary || 'Proposed change'}`;
+    title.style.cssText = 'margin-bottom:8px;font-family:system-ui,sans-serif;font-weight:700;color:#baf7fb';
+    const diff = document.createElement('pre');
+    diff.textContent = preview.patches.map((patch) => patch.diff).join('\n\n');
+    diff.style.cssText = 'margin:0 0 10px;white-space:pre-wrap;max-height:190px;overflow:auto';
+    const apply = document.createElement('button');
+    apply.textContent = 'Apply changes';
+    apply.style.cssText = 'margin-right:8px;padding:6px 9px;border:0;border-radius:5px;background:#00f2fe;color:#04202a;font-weight:700;cursor:pointer';
+    const cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    cancel.style.cssText = 'padding:6px 9px;border:1px solid #39707d;border-radius:5px;background:transparent;color:#dffcff;cursor:pointer';
+    apply.addEventListener('click', () => {
+      feedback.textContent = 'Applying…';
+      sendMutation({ type: 'APPLY_REQUEST', previewId: preview.previewId }, (message) => {
+        feedback.textContent = message.status === 'SUCCESS' ? '✓ HMR triggered' : `⚠ ${message.message || 'Apply failed'}`;
+        if (message.status === 'SUCCESS') previewPanel?.remove();
+      });
+    });
+    cancel.addEventListener('click', () => { previewPanel?.remove(); feedback.textContent = 'Cancelled'; });
+    previewPanel.append(title, diff, apply, cancel);
+    root.append(previewPanel);
   }
 
   function showHistory(selector, feedback) {
@@ -220,8 +262,9 @@ function createHud() {
   function renderHistory(entries, feedback) {
     historyPanel?.remove();
     historyPanel = document.createElement('div');
+    const historyPosition = panelPosition(220);
     Object.assign(historyPanel.style, {
-      position: 'fixed', left: `${Math.max(8, selection.x)}px`, top: `${Math.min(window.innerHeight - 12, selection.y + selection.height + 8)}px`,
+      position: 'fixed', left: `${historyPosition.left}px`, top: `${historyPosition.top}px`,
       width: 'min(520px, calc(100vw - 16px))', maxHeight: '220px', overflowY: 'auto',
       padding: '8px', border: '1px solid #00f2fe', borderRadius: '8px', background: 'rgba(4, 16, 25, .98)',
       color: '#dffcff', font: '12px/1.3 system-ui, sans-serif', pointerEvents: 'auto', zIndex: '1',
@@ -251,12 +294,53 @@ function createHud() {
     root.append(historyPanel);
   }
 
+  function panelPosition(panelHeight) {
+    const margin = 8;
+    const preferredTop = selection.y + selection.height + margin;
+    const fitsBelow = preferredTop + panelHeight <= window.innerHeight - margin;
+    return {
+      left: Math.max(margin, Math.min(selection.x, window.innerWidth - 628)),
+      top: fitsBelow ? preferredTop : Math.max(margin, selection.y - panelHeight - margin),
+    };
+  }
+
   return {
     destroy() {
       window.removeEventListener('resize', resize);
       root.remove();
     },
   };
+}
+
+function findBestTargetElement(centerX, centerY, selection) {
+  const inset = 12;
+  const samplePoints = [
+    [centerX, centerY],
+    [selection.x + inset, selection.y + inset],
+    [selection.x + selection.width - inset, selection.y + inset],
+    [selection.x + inset, selection.y + selection.height - inset],
+    [selection.x + selection.width - inset, selection.y + selection.height - inset],
+  ];
+  const selectionArea = Math.max(1, selection.width * selection.height);
+  const candidates = new Set();
+
+  samplePoints.forEach(([x, y]) => {
+    const element = document.elementFromPoint(x, y);
+    for (let node = element; node && node !== document.documentElement; node = node.parentElement) {
+      candidates.add(node);
+    }
+  });
+
+  return [...candidates].sort((first, second) => scoreTarget(second, selectionArea) - scoreTarget(first, selectionArea))[0] || null;
+}
+
+function scoreTarget(element, selectionArea) {
+  const rect = element.getBoundingClientRect();
+  const area = Math.max(1, rect.width * rect.height);
+  const hasSource = element.hasAttribute('data-source') || element.hasAttribute('data-inspector-line');
+  const isBody = element === document.body || element === document.documentElement;
+  // Prefer source-mapped elements whose visible area best matches the drawn box.
+  return (hasSource ? 10_000 : 0) - Math.abs(Math.log(area / selectionArea)) * 100 - (isBody ? 500 : 0);
 }
 
 function rectangleFrom(start, end) {
@@ -303,6 +387,12 @@ function applyCssPreview(element, cssText) {
     const [property, value] = declaration.split(':').map((part) => part?.trim());
     if (property && value) element.style.setProperty(property, value);
   });
+}
+
+function getStyleSummary(element) {
+  const style = getComputedStyle(element);
+  return Object.fromEntries(['display', 'position', 'width', 'maxWidth', 'padding', 'margin', 'gap', 'fontSize', 'color', 'backgroundColor', 'borderRadius']
+    .map((property) => [property, style[property]]));
 }
 
 function cssSelector(element) {

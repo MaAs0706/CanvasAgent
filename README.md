@@ -79,7 +79,7 @@ If extension files change, reload the extension at `chrome://extensions` and har
 
 ## History and rollback
 
-Every mutation first backs up the current source file, then saves a revision snapshot representing the resulting change. Select an element, click **History**, choose a revision, and confirm restoration. A rollback also backs up the current file, so it can be reversed later.
+Every mutation first generates a reviewable diff. Only the **Apply changes** action writes to disk; that action backs up the current source file, then saves a revision snapshot representing the resulting change. Select an element, click **History**, choose a revision, and confirm restoration. A rollback also backs up the current file, so it can be reversed later.
 
 Backups and history live in `.canvasagent-backups/`, which is intentionally ignored by Git.
 
@@ -88,7 +88,7 @@ Backups and history live in `.canvasagent-backups/`, which is intentionally igno
 - Never commit `.env` or expose the API key to extension/browser code.
 - The bridge only writes under `PROJECT_ROOT`.
 - The bridge rejects model responses that remove a required default export from the patched context.
-- The current patching strategy is a focused line-window replacement; it is suitable for the demo but should evolve toward AST-aware edits and compile validation.
+- The current patching strategy is a focused line-window replacement wrapped in a preview/apply transaction; it is suitable for the demo but should evolve toward AST-aware edits and compile validation.
 - Viewport HUD cannot rewrite the deployed source code of unrelated external websites. Those sites use Production Mode CSS previews/patches instead.
 
 ## Next stage

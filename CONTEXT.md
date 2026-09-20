@@ -23,7 +23,7 @@ The project is a **working MVP**. The core localhost loop is implemented and dem
 - `content.js`: native Canvas selection overlay; uses `elementFromPoint`; sends WebSocket mutation/history/rollback requests; shows a floating prompt and component history controls.
 - `reactFiberInspector.js`: discovers private React Fiber keys when present and falls back to development DOM attributes or a CSS selector.
 - `vite-plugin-viewport-hud-source.js`: Vite/Babel development transform that stamps native JSX DOM elements with `data-source`, `data-inspector-line`, and `data-component`.
-- `server.mjs`: local WebSocket server; calls OpenAI Responses API; writes a focused source replacement; maintains `.canvasagent-backups/history.json` and revision snapshots.
+- `server.mjs`: local WebSocket server; calls OpenAI Responses API with structured output; generates a source/CSS diff preview; applies confirmed patches transactionally; maintains `.canvasagent-backups/history.json` and revision snapshots.
 - `src/`: Vite React demo app. Dedicated component files make the demo safer to patch.
 
 ## Important behavior and constraints
@@ -35,7 +35,7 @@ The project is a **working MVP**. The core localhost loop is implemented and dem
 - The bridge reads configuration from `.env`; do not inspect, log, commit, or expose `OPENAI_API_KEY`.
 - `PROJECT_ROOT` must be the absolute local project path. The server refuses writes outside it.
 - Production Mode cannot modify arbitrary deployed website source. It currently provides a CSS-preview fallback.
-- Current file patching uses a 50-line context window. It is not AST-aware and should be upgraded before production use.
+- Current file patching uses a 50-line context window. It now requires preview approval before writing, but is not AST-aware and should be upgraded before production use.
 
 ## History semantics
 

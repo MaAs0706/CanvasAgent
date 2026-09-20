@@ -60,7 +60,7 @@ The API key remains in the developer’s local `.env` file; it is never exposed 
 
 ### Demo / Pitch Video
 
-https://drive.google.com/file/d/1UECNPmYKXKU8VWDCS9Wm0UcbVh5aKx4n/view?usp=drive_link
+https://drive.google.com/file/d/1kX9KHwCHpkg17jXPO-kNgH-MlHVGAL4b/view?usp=drive_link
 
 
 ## Screenshots
